@@ -1,0 +1,106 @@
+import os
+import tarfile
+import pickle
+import numpy as np
+import tensorflow as tf
+from tensorflow.keras.applications import VGG16, ResNet50
+from tensorflow.keras.models import Sequential
+from tensorflow.keras.layers import Dense, Flatten
+from tensorflow.keras.optimizers import Adam
+from tensorflow.keras.callbacks import ModelCheckpoint
+import matplotlib.pyplot as plt
+from scipy.stats import ttest_ind, f_oneway
+
+tar = tarfile.open("cifar-10-python.tar.gz")
+tar.extractall()
+tar.close()
+
+def load_batch(filename):
+    with open(filename, "rb") as f:
+        data = pickle.load(f, encoding="bytes")
+        images = data[b"data"]
+        labels = data[b"labels"]
+        images = images.reshape(10000, 3, 32, 32).transpose(0, 2, 3, 1)
+        labels = np.array(labels)
+        return images, labels
+
+x_train = []
+y_train = []
+for i in range(1, 6):
+    images, labels = load_batch(os.path.abspath(os.path.join("cifar-10-batches-py", f"data_batch_{i}")))
+    x_train.append(images)
+    y_train.append(labels)
+x_train = np.concatenate(x_train)
+y_train = np.concatenate(y_train)
+x_test, y_test = load_batch(os.path.abspath(os.path.join("cifar-10-batches-py", "test_batch")))
+
+x_train = x_train.astype("float32") / 255
+x_test = x_test.astype("float32") / 255
+y_train = tf.keras.utils.to_categorical(y_train, 10)
+y_test = tf.keras.utils.to_categorical(y_test, 10)
+
+x_train, x_val = x_train[:40000], x_train[40000:]
+y_train, y_val = y_train[:40000], y_train[40000:]
+
+def create_model(architecture):
+    if architecture == "ResNet50":
+        base_model = ResNet50(weights=None, include_top=False, input_shape=(32, 32, 3))
+    elif architecture == "VGG16":
+        base_model = VGG16(weights=None, include_top=False, input_shape=(32, 32, 3))
+    else:
+        raise ValueError("Unsupported architecture")
+    
+    model = Sequential([
+        base_model,
+        Flatten(),
+        Dense(512, activation="relu"),
+        Dense(10, activation="softmax")
+    ])
+    
+    model.compile(optimizer=Adam(), loss="categorical_crossentropy", metrics=["accuracy"])
+    return model
+
+resnet_model = create_model("ResNet50")
+resnet_checkpoint = ModelCheckpoint("resnet_model.h5", save_best_only=True, monitor="val_accuracy")
+resnet_history = resnet_model.fit(x_train, y_train, batch_size=64, epochs=10, validation_data=(x_val, y_val), callbacks=[resnet_checkpoint])
+
+vgg_model = create_model("VGG16")
+vgg_checkpoint = ModelCheckpoint("vgg_model.h5", save_best_only=True, monitor="val_accuracy")
+vgg_history = vgg_model.fit(x_train, y_train, batch_size=64, epochs=10, validation_data=(x_val, y_val), callbacks=[vgg_checkpoint])
+
+resnet_model = tf.keras.models.load_model("resnet_model.h5")
+vgg_model = tf.keras.models.load_model("vgg_model.h5")
+
+resnet_loss, resnet_acc = resnet_model.evaluate(x_test, y_test)
+vgg_loss, vgg_acc = vgg_model.evaluate(x_test, y_test)
+
+print("ResNet50 Accuracy:", resnet_acc)
+print("VGG16 Accuracy:", vgg_acc)
+t_stat, p_value = ttest_ind(resnet_history.history["val_accuracy"], vgg_history.history["val_accuracy"])
+print("T-test p-value:", p_value)
+
+print("ResNet50 Loss:", resnet_loss)
+print("VGG16 Loss:", vgg_loss)
+f_stat, p_value = f_oneway(resnet_history.history["val_loss"], vgg_history.history["val_loss"])
+print("ANOVA p-value:", p_value)
+
+plt.plot(resnet_history.history["loss"], label="Perte de formation")
+plt.plot(resnet_history.history["val_loss"], label="Perte de validation")
+plt.title("Perte de modèle au cours de la période")
+plt.ylabel("Perte")
+plt.xlabel("Période")
+plt.legend(loc="upper right")
+plt.show()
+
+def show_predictions(data, labels, model):
+    plt.subplots(figsize=(10, 10))
+    for i in range(12):
+        plt.subplot(3, 4, i+1)
+        k = np.random.randint(0, data.shape[0])
+        plt.title(f"True: {labels[k].argmax()}, Pred: {model.predict(data[k:k+1]).argmax()}")
+        plt.imshow(data[k])
+        plt.tight_layout()
+    plt.show()
+
+show_predictions(x_test, y_test, resnet_model)
+show_predictions(x_test, y_test, vgg_model)
